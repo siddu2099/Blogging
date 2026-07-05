@@ -3,33 +3,55 @@ import { useEffect, useState } from 'react';
 import api from '@/lib/api';
 import { Post } from '@/types';
 import Link from 'next/link';
+import { Loader2 } from 'lucide-react';
 
 const CATEGORIES = ['All', 'General', 'Tech', 'Lifestyle', 'Coding', 'Design'];
 
 export default function Home() {
   const [posts, setPosts] = useState<Post[]>([]);
   const [selectedCat, setSelectedCat] = useState('All');
-  const [page, setPage] = useState(1);      // Current Page
-  const [totalPages, setTotalPages] = useState(1); // Total Pages
+  
+  // Cursor Pagination State
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [hasNextPage, setHasNextPage] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState(false);
 
+  // Fetch initial posts on mount or category change
   useEffect(() => {
-    // Reset to page 1 when category changes
-    setPage(1);
+    fetchPosts(null, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCat]);
 
-  useEffect(() => {
-    const url = selectedCat === 'All' 
-      ? `/posts?page=${page}` 
-      : `/posts?cat=${selectedCat}&page=${page}`;
-    
-    api.get(url)
-      .then((res) => {
-        // Backend now returns an object { posts, totalPages, currentPage }
-        setPosts(res.data.posts);
-        setTotalPages(res.data.totalPages);
-      })
-      .catch((err) => console.error(err));
-  }, [selectedCat, page]);
+  const fetchPosts = async (cursor: string | null = null, reset: boolean = false) => {
+    setIsLoading(true);
+    try {
+      const url = selectedCat === 'All' 
+        ? `/posts?limit=6${cursor ? `&cursor=${cursor}` : ''}` 
+        : `/posts?cat=${selectedCat}&limit=6${cursor ? `&cursor=${cursor}` : ''}`;
+      
+      const res = await api.get(url);
+      
+      const data = res.data;
+      if (reset) {
+        setPosts(data.posts);
+      } else {
+        setPosts((prev) => [...prev, ...data.posts]);
+      }
+      setNextCursor(data.nextCursor);
+      setHasNextPage(data.hasNextPage);
+      
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleLoadMore = () => {
+    if (hasNextPage && nextCursor) {
+      fetchPosts(nextCursor);
+    }
+  };
 
   return (
     <div className="space-y-8">
@@ -78,28 +100,23 @@ export default function Home() {
         ))}
       </div>
 
-      {/* Pagination Controls */}
-      {posts.length > 0 && (
-        <div className="flex justify-center gap-4 mt-10">
+      {/* Load More Button (Cursor Pagination) */}
+      {hasNextPage && (
+        <div className="flex justify-center mt-10">
           <button 
-            disabled={page === 1}
-            onClick={() => setPage(page - 1)}
-            className={`px-4 py-2 rounded border ${page === 1 ? 'bg-gray-100 text-gray-400' : 'bg-white hover:bg-gray-50'}`}
+            onClick={handleLoadMore}
+            disabled={isLoading}
+            className="px-6 py-3 rounded-full border border-blue-600 text-blue-600 hover:bg-blue-50 transition-colors font-medium flex items-center justify-center gap-2"
           >
-            Previous
+            {isLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+            {isLoading ? 'Loading...' : 'Load More Stories'}
           </button>
-          
-          <span className="px-4 py-2 text-gray-600">
-            Page {page} of {totalPages}
-          </span>
-
-          <button 
-            disabled={page === totalPages}
-            onClick={() => setPage(page + 1)}
-            className={`px-4 py-2 rounded border ${page === totalPages ? 'bg-gray-100 text-gray-400' : 'bg-white hover:bg-gray-50'}`}
-          >
-            Next
-          </button>
+        </div>
+      )}
+      
+      {!hasNextPage && posts.length > 0 && (
+        <div className="text-center text-gray-500 mt-10">
+          You have reached the end.
         </div>
       )}
     </div>

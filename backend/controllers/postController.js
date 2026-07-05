@@ -1,92 +1,99 @@
-const Post = require('../models/Post');
+const postService = require('../services/postService');
+const { postSchema } = require('../utils/validators');
+const logger = require('../utils/logger');
 
-// @desc    Get all published posts with Pagination & Filtering
-// @route   GET /api/posts?page=1&cat=Tech
-const getPosts = async (req, res) => {
+// @desc    Get all published posts with Pagination (Cursor) & Filtering
+// @route   GET /api/posts?cursor=xyz&limit=6&cat=Tech
+const getPosts = async (req, res, next) => {
   try {
-    const { cat, page = 1, limit = 6 } = req.query; // Default: Page 1, 6 posts per page
-    let query = { isPublished: true };
-
-    if (cat && cat !== 'All') {
-      query.category = cat;
-    }
-
-    const posts = await Post.find(query)
-      .populate('author', 'name')
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)        // Limit results
-      .skip((page - 1) * limit); // Skip previous pages
-
-    // Get total count for frontend to know if "Next" button is needed
-    const total = await Post.countDocuments(query);
-
-    res.json({
-      posts,
-      totalPages: Math.ceil(total / limit),
-      currentPage: Number(page)
+    const { cat, cursor, limit } = req.query;
+    const postsResult = await postService.getPosts({ 
+      cursor, 
+      limit, 
+      category: cat 
     });
+    
+    res.json(postsResult);
   } catch (error) {
-    res.status(500).json({ message: 'Server Error' });
+    next(error);
   }
 };
 
-// ... (Keep the rest of the functions: getPostBySlug, createPost, etc. exactly the same)
-// If you want the full file again, let me know, but updating just 'getPosts' is safer here.
-const getPostBySlug = async (req, res) => {
+// @desc    Get post by slug
+// @route   GET /api/posts/:slug
+const getPostBySlug = async (req, res, next) => {
   try {
-    const post = await Post.findOne({ slug: req.params.slug }).populate('author', 'name');
-    if (post) res.json(post);
-    else res.status(404).json({ message: 'Post not found' });
-  } catch (error) { res.status(500).json({ message: 'Server Error' }); }
+    const post = await postService.getPostBySlug(req.params.slug);
+    if (!post) return res.status(404).json({ message: 'Post not found' });
+    res.json(post);
+  } catch (error) { 
+    next(error); 
+  }
 };
 
-const createPost = async (req, res) => {
+// @desc    Create a new post
+// @route   POST /api/posts
+// @access  Private
+const createPost = async (req, res, next) => {
   try {
-    const { title, content, excerpt, category, coverImage } = req.body;
-    if (!title || !content) return res.status(400).json({ message: 'Title/Content required' });
-
-    const post = await Post.create({
-      title, content, excerpt: excerpt || content.substring(0, 100),
-      category: category || 'General', coverImage: coverImage || '',
-      author: req.user._id, isPublished: true
-    });
+    // strict Zod validation + strips out mass-assigned fields
+    const validatedData = postSchema.parse(req.body);
+    
+    const post = await postService.createPost(validatedData, req.user._id);
     res.status(201).json(post);
-  } catch (error) { res.status(400).json({ message: 'Invalid data' }); }
+  } catch (error) { 
+    // Handled by errorMiddleware (if ZodError)
+    next(error); 
+  }
 };
 
-const getMyPosts = async (req, res) => {
+// @desc    Get logged in user's posts
+// @route   GET /api/posts/me
+// @access  Private 
+const getMyPosts = async (req, res, next) => {
   try {
-    const posts = await Post.find({ author: req.user._id }).sort({ createdAt: -1 });
-    res.json(posts);
-  } catch (error) { res.status(500).json({ message: 'Server Error' }); }
+    // Reusing the service for custom logic, though this could be more optimized
+    // For now we can fetch via direct repo if we want, or add to service
+    // Wait, the original code fetched my posts sorted by createdAt. 
+    // We'll update postService to handle this properly.
+    const postRepository = require('../repositories/postRepository');
+    const posts = await postRepository.findPosts({ category: 'All', limit: 100 }); // simplified for me
+    // Filter out only my posts or let's just make a service function for it later.
+    // Actually, let's fix it properly using postRepository:
+    const myPosts = await require('../models/Post').find({ author: req.user._id, isDeleted: false }).sort({ createdAt: -1 });
+    res.json(myPosts);
+  } catch (error) { 
+    next(error); 
+  }
 };
 
-const deletePost = async (req, res) => {
+// @desc    Delete post
+// @route   DELETE /api/posts/:id
+// @access  Private
+const deletePost = async (req, res, next) => {
   try {
-    const post = await Post.findById(req.params.id);
-    if (!post) return res.status(404).json({ message: 'Post not found' });
-    if (post.author.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
-    await post.deleteOne();
-    res.json({ message: 'Post removed' });
-  } catch (error) { res.status(500).json({ message: 'Server Error' }); }
+    // Let's use soft delete or hard delete depending on requirement
+    // Service handles ownership checks now!
+    await postService.softDeletePost(req.params.id, req.user);
+    // await postService.deletePost(req.params.id, req.user); // if hard delete
+    
+    res.json({ message: 'Post soft deleted safely' });
+  } catch (error) { 
+    next(error); 
+  }
 };
 
-const updatePost = async (req, res) => {
+// @desc    Update post
+// @route   PUT /api/posts/:id
+// @access  Private
+const updatePost = async (req, res, next) => {
   try {
-    const { title, content, excerpt, category, coverImage } = req.body;
-    const post = await Post.findById(req.params.id);
-    if (!post) return res.status(404).json({ message: 'Post not found' });
-    if (post.author.toString() !== req.user._id.toString()) return res.status(401).json({ message: 'Not authorized' });
-
-    post.title = title || post.title;
-    post.content = content || post.content;
-    post.excerpt = excerpt || post.excerpt;
-    post.category = category || post.category;
-    post.coverImage = coverImage || post.coverImage;
-
-    const updatedPost = await post.save();
+    const validatedData = postSchema.partial().parse(req.body);
+    const updatedPost = await postService.updatePost(req.params.id, validatedData, req.user);
     res.json(updatedPost);
-  } catch (error) { res.status(500).json({ message: 'Server Error' }); }
+  } catch (error) { 
+    next(error); 
+  }
 };
 
 module.exports = { getPosts, createPost, getPostBySlug, getMyPosts, deletePost, updatePost };
